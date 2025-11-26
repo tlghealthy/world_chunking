@@ -2,11 +2,12 @@
 Elegant 2D Chunk Loading/Unloading Demo
 ========================================
 Demonstrates loading/unloading world chunks around a player.
-Chunks within a 3x3 grid around the player are loaded; others are unloaded.
+Uses a hex-like offset pattern (7 chunks) for more circular coverage.
 """
 
 import pygame
 import hashlib
+import math
 from dataclasses import dataclass
 
 # Constants
@@ -51,12 +52,25 @@ class ChunkManager:
         self.chunks: dict[tuple[int, int], Chunk] = {}
     
     def get_required_chunks(self, center_x: int, center_y: int) -> set[tuple[int, int]]:
-        """Returns the set of chunk coordinates needed for a 3x3 grid around center."""
-        return {
-            (center_x + dx, center_y + dy)
-            for dx in (-1, 0, 1)
-            for dy in (-1, 0, 1)
-        }
+        """Returns 7 chunks in hex-like pattern (drops 2 far corners)."""
+        chunks = set()
+        
+        # Current row - all 3 chunks
+        for dx in (-1, 0, 1):
+            chunks.add((center_x + dx, center_y))
+        
+        # Adjacent rows - only 2 each (hex offset pattern)
+        for dy in (-1, 1):
+            if center_y % 2 == 0:
+                # Even row: neighbors are at x-1 and x
+                chunks.add((center_x - 1, center_y + dy))
+                chunks.add((center_x, center_y + dy))
+            else:
+                # Odd row: neighbors are at x and x+1
+                chunks.add((center_x, center_y + dy))
+                chunks.add((center_x + 1, center_y + dy))
+        
+        return chunks
     
     def update(self, player_chunk_x: int, player_chunk_y: int):
         """Load/unload chunks based on player's current chunk position."""
@@ -84,8 +98,16 @@ class Player:
     
     @property
     def chunk_coords(self) -> tuple[int, int]:
-        """Returns which chunk the player is currently in."""
-        return (int(self.x // CHUNK_SIZE), int(self.y // CHUNK_SIZE))
+        """Returns which chunk the player is currently in (accounting for hex offset)."""
+        chunk_y = int(math.floor(self.y / CHUNK_SIZE))
+        
+        # Odd rows are offset right by 0.5 chunks, so adjust x accordingly
+        x_adjusted = self.x
+        if chunk_y % 2 != 0:
+            x_adjusted -= CHUNK_SIZE * 0.5
+        
+        chunk_x = int(math.floor(x_adjusted / CHUNK_SIZE))
+        return (chunk_x, chunk_y)
     
     def move(self, dx: float, dy: float):
         self.x += dx
@@ -129,6 +151,15 @@ class Game:
                 self.chunk_manager.update(*current_chunk)
                 self.last_chunk = current_chunk
     
+    def chunk_world_pos(self, chunk_x: int, chunk_y: int) -> tuple[float, float]:
+        """Get the world position of a chunk's top-left corner (with hex offset)."""
+        world_x = chunk_x * CHUNK_SIZE
+        # Odd rows are offset right by half a chunk
+        if chunk_y % 2 != 0:
+            world_x += CHUNK_SIZE * 0.5
+        world_y = chunk_y * CHUNK_SIZE
+        return (world_x, world_y)
+    
     def world_to_screen(self, world_x: float, world_y: float) -> tuple[int, int]:
         """Convert world coordinates to screen coordinates (camera follows player)."""
         screen_x = world_x - self.player.x + self.camera_offset[0]
@@ -137,9 +168,8 @@ class Game:
     
     def render_chunk(self, chunk: Chunk):
         """Render a single chunk with its coordinates and hash."""
-        # Calculate chunk's world position
-        world_x = chunk.x * CHUNK_SIZE
-        world_y = chunk.y * CHUNK_SIZE
+        # Calculate chunk's world position (with hex offset)
+        world_x, world_y = self.chunk_world_pos(chunk.x, chunk.y)
         screen_x, screen_y = self.world_to_screen(world_x, world_y)
         
         # Draw chunk rectangle
