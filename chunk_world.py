@@ -51,8 +51,17 @@ class ChunkManager:
     def __init__(self):
         self.chunks: dict[tuple[int, int], Chunk] = {}
     
-    def get_required_chunks(self, center_x: int, center_y: int) -> set[tuple[int, int]]:
-        """Returns 7 chunks in hex-like pattern (drops 2 far corners)."""
+    def get_required_chunks(self, center_x: int, center_y: int, hex_mode: bool = True) -> set[tuple[int, int]]:
+        """Returns required chunks around player position."""
+        if not hex_mode:
+            # Regular 3x3 grid (9 chunks)
+            return {
+                (center_x + dx, center_y + dy)
+                for dx in (-1, 0, 1)
+                for dy in (-1, 0, 1)
+            }
+        
+        # Hex-like pattern (7 chunks - drops 2 far corners)
         chunks = set()
         
         # Current row - all 3 chunks
@@ -72,9 +81,9 @@ class ChunkManager:
         
         return chunks
     
-    def update(self, player_chunk_x: int, player_chunk_y: int):
+    def update(self, player_chunk_x: int, player_chunk_y: int, hex_mode: bool = True):
         """Load/unload chunks based on player's current chunk position."""
-        required = self.get_required_chunks(player_chunk_x, player_chunk_y)
+        required = self.get_required_chunks(player_chunk_x, player_chunk_y, hex_mode)
         current = set(self.chunks.keys())
         
         # Unload chunks no longer needed
@@ -96,14 +105,13 @@ class Player:
         self.x = x
         self.y = y
     
-    @property
-    def chunk_coords(self) -> tuple[int, int]:
-        """Returns which chunk the player is currently in (accounting for hex offset)."""
+    def get_chunk_coords(self, hex_mode: bool = True) -> tuple[int, int]:
+        """Returns which chunk the player is currently in."""
         chunk_y = int(math.floor(self.y / CHUNK_SIZE))
         
-        # Odd rows are offset right by 0.5 chunks, so adjust x accordingly
         x_adjusted = self.x
-        if chunk_y % 2 != 0:
+        # Only apply hex offset adjustment in hex mode
+        if hex_mode and chunk_y % 2 != 0:
             x_adjusted -= CHUNK_SIZE * 0.5
         
         chunk_x = int(math.floor(x_adjusted / CHUNK_SIZE))
@@ -125,13 +133,16 @@ class Game:
         self.font = pygame.font.SysFont("Consolas", 14)
         self.font_large = pygame.font.SysFont("Consolas", 18, bold=True)
         
+        # Grid mode: True = hex offset (7 chunks), False = regular 3x3 (9 chunks)
+        self.hex_mode = True
+        
         # Start player at origin (will be in chunk 0,0)
         self.player = Player(CHUNK_SIZE // 2, CHUNK_SIZE // 2)
         self.chunk_manager = ChunkManager()
         
         # Initial chunk load
-        self.chunk_manager.update(*self.player.chunk_coords)
-        self.last_chunk = self.player.chunk_coords
+        self.chunk_manager.update(*self.player.get_chunk_coords(self.hex_mode), self.hex_mode)
+        self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
         
         # Camera offset to center view
         self.camera_offset = (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)
@@ -146,16 +157,26 @@ class Game:
             self.player.move(dx, dy)
             
             # Check if player entered a new chunk
-            current_chunk = self.player.chunk_coords
+            current_chunk = self.player.get_chunk_coords(self.hex_mode)
             if current_chunk != self.last_chunk:
-                self.chunk_manager.update(*current_chunk)
+                self.chunk_manager.update(*current_chunk, self.hex_mode)
                 self.last_chunk = current_chunk
     
+    def toggle_mode(self):
+        """Toggle between hex offset mode and regular 3x3 grid."""
+        self.hex_mode = not self.hex_mode
+        mode_name = "Hex Offset (7 chunks)" if self.hex_mode else "Regular 3x3 (9 chunks)"
+        print(f"[MODE] Switched to: {mode_name}")
+        
+        # Recalculate chunk position and reload chunks for new mode
+        self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+        self.chunk_manager.update(*self.last_chunk, self.hex_mode)
+    
     def chunk_world_pos(self, chunk_x: int, chunk_y: int) -> tuple[float, float]:
-        """Get the world position of a chunk's top-left corner (with hex offset)."""
+        """Get the world position of a chunk's top-left corner."""
         world_x = chunk_x * CHUNK_SIZE
-        # Odd rows are offset right by half a chunk
-        if chunk_y % 2 != 0:
+        # Only apply hex offset in hex mode
+        if self.hex_mode and chunk_y % 2 != 0:
             world_x += CHUNK_SIZE * 0.5
         world_y = chunk_y * CHUNK_SIZE
         return (world_x, world_y)
@@ -195,12 +216,14 @@ class Game:
     
     def render_hud(self):
         """Render HUD information."""
-        chunk_x, chunk_y = self.player.chunk_coords
+        chunk_x, chunk_y = self.player.get_chunk_coords(self.hex_mode)
+        mode_name = "Hex Offset (7)" if self.hex_mode else "Regular 3x3 (9)"
         texts = [
             f"Player World Pos: ({self.player.x:.0f}, {self.player.y:.0f})",
             f"Current Chunk: ({chunk_x}, {chunk_y})",
             f"Loaded Chunks: {len(self.chunk_manager.chunks)}",
-            "Move: WASD | ESC: Quit"
+            f"Mode: {mode_name}",
+            "Move: WASD | 1: Toggle Mode | ESC: Quit"
         ]
         
         for i, text in enumerate(texts):
@@ -230,6 +253,8 @@ class Game:
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
+                    elif event.key == pygame.K_1:
+                        self.toggle_mode()
             
             self.handle_input()
             self.render()
