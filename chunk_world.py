@@ -28,7 +28,7 @@ COORD_COLOR = (100, 180, 255)
 HASH_COLOR = (255, 180, 100)
 
 # Slowmo settings
-SLOWMO_INTERVAL = 20  # Frames between operations
+DEFAULT_SLOWMO_INTERVAL = 20  # Default frames between operations
 
 
 @dataclass
@@ -222,6 +222,7 @@ class Game:
         # Slowmo mode: rate-limits chunk operations
         self.slowmo_mode = False
         self.slowmo_frame_counter = 0
+        self.slowmo_interval = DEFAULT_SLOWMO_INTERVAL  # Adjustable frames per operation
         
         # Start player at origin (will be in chunk 0,0)
         self.player = Player(CHUNK_SIZE // 2, CHUNK_SIZE // 2)
@@ -290,11 +291,21 @@ class Game:
             return
         
         self.slowmo_frame_counter += 1
-        if self.slowmo_frame_counter >= SLOWMO_INTERVAL:
+        if self.slowmo_frame_counter >= self.slowmo_interval:
             self.slowmo_frame_counter = 0
             result = self.chunk_manager.process_slowmo_tick()
             if result:
                 print(f"[SLOWMO] {result}")
+    
+    def adjust_slowmo_interval(self, delta: int):
+        """Adjust the frames between slowmo operations (minimum 1)."""
+        old_interval = self.slowmo_interval
+        self.slowmo_interval = max(1, self.slowmo_interval + delta)
+        
+        if self.slowmo_interval != old_interval:
+            print(f"[SLOWMO] Interval: {self.slowmo_interval} frames")
+            # Reset counter to avoid immediate trigger after increasing
+            self.slowmo_frame_counter = min(self.slowmo_frame_counter, self.slowmo_interval - 1)
     
     def chunk_world_pos(self, chunk_x: int, chunk_y: int) -> tuple[float, float]:
         """Get the world position of a chunk's top-left corner."""
@@ -373,7 +384,11 @@ class Game:
         chunk_x, chunk_y = self.player.get_chunk_coords(self.hex_mode)
         grid_size = 2 * (self.padding + 1) + 1
         mode_name = "Hex Offset" if self.hex_mode else "Square"
-        slowmo_status = f"ON ({self.chunk_manager.queue_status})" if self.slowmo_mode else "OFF"
+        
+        if self.slowmo_mode:
+            slowmo_status = f"ON @ {self.slowmo_interval}f ({self.chunk_manager.queue_status})"
+        else:
+            slowmo_status = f"OFF ({self.slowmo_interval}f)"
         
         texts = [
             f"Player World Pos: ({self.player.x:.0f}, {self.player.y:.0f})",
@@ -381,7 +396,7 @@ class Game:
             f"Loaded Chunks: {len(self.chunk_manager.chunks)}",
             f"Grid: {grid_size}x{grid_size} {mode_name}",
             f"Slowmo: {slowmo_status}",
-            "WASD: Move | 1: Mode | 2: Slowmo | Up/Down: Grid Size | ESC: Quit"
+            "WASD: Move | 1: Mode | 2: Slowmo | Arrows: Grid/Speed | ESC: Quit"
         ]
         
         for i, text in enumerate(texts):
@@ -392,7 +407,7 @@ class Game:
         if self.slowmo_mode:
             bar_x, bar_y = 20, 180
             bar_width, bar_height = 200, 10
-            progress = self.slowmo_frame_counter / SLOWMO_INTERVAL
+            progress = self.slowmo_frame_counter / self.slowmo_interval
             
             pygame.draw.rect(self.screen, (40, 45, 55), (bar_x, bar_y, bar_width, bar_height))
             pygame.draw.rect(self.screen, (100, 180, 255), (bar_x, bar_y, int(bar_width * progress), bar_height))
@@ -434,6 +449,10 @@ class Game:
                         self.adjust_padding(1)
                     elif event.key == pygame.K_DOWN:
                         self.adjust_padding(-1)
+                    elif event.key == pygame.K_RIGHT:
+                        self.adjust_slowmo_interval(5)
+                    elif event.key == pygame.K_LEFT:
+                        self.adjust_slowmo_interval(-5)
             
             self.handle_input()
             self.process_slowmo()
