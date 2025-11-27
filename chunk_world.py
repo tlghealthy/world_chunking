@@ -218,6 +218,9 @@ class Game:
         # Hexagon overlay rendering (only visible in hex mode)
         self.show_hexagons = False
         
+        # True hex boundaries: use hexagon edges instead of square edges for chunk detection
+        self.true_hex_bounds = False
+        
         # Padding: 0 = 3x3, 1 = 5x5, 2 = 7x7, etc.
         self.padding = 0
         self.max_padding = 4  # Cap at 9x9
@@ -232,8 +235,8 @@ class Game:
         self.chunk_manager = ChunkManager()
         
         # Initial chunk load
-        self.chunk_manager.update(*self.player.get_chunk_coords(self.hex_mode), self.hex_mode, self.slowmo_mode, self.padding)
-        self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+        self.last_chunk = self.player.get_chunk_coords(self.hex_mode)  # Start with square bounds
+        self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
         
         # Camera offset to center view
         self.camera_offset = (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)
@@ -247,8 +250,8 @@ class Game:
         if dx or dy:
             self.player.move(dx, dy)
             
-            # Check if player entered a new chunk
-            current_chunk = self.player.get_chunk_coords(self.hex_mode)
+            # Check if player entered a new chunk (uses hex or square bounds)
+            current_chunk = self.get_player_chunk()
             if current_chunk != self.last_chunk:
                 self.chunk_manager.update(*current_chunk, self.hex_mode, self.slowmo_mode, self.padding)
                 self.last_chunk = current_chunk
@@ -256,11 +259,16 @@ class Game:
     def toggle_mode(self):
         """Toggle between hex offset mode and regular square grid."""
         self.hex_mode = not self.hex_mode
+        
+        # Disable true hex bounds when switching to square mode
+        if not self.hex_mode:
+            self.true_hex_bounds = False
+        
         mode_name = "Hex Offset" if self.hex_mode else "Square Grid"
         print(f"[MODE] Switched to: {mode_name}")
         
         # Recalculate chunk position and reload chunks for new mode
-        self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+        self.last_chunk = self.get_player_chunk()
         self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
     
     def toggle_slowmo(self):
@@ -272,7 +280,7 @@ class Game:
         
         # If turning off slowmo, flush all pending operations immediately
         if not self.slowmo_mode:
-            self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+            self.last_chunk = self.get_player_chunk()
             self.chunk_manager.update(*self.last_chunk, self.hex_mode, False, self.padding)
     
     def adjust_padding(self, delta: int):
@@ -285,7 +293,7 @@ class Game:
             print(f"[PADDING] {grid_size}x{grid_size} grid (padding={self.padding})")
             
             # Reload chunks with new padding
-            self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+            self.last_chunk = self.get_player_chunk()
             self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
     
     def process_slowmo(self):
@@ -315,6 +323,73 @@ class Game:
         self.show_hexagons = not self.show_hexagons
         status = "ON" if self.show_hexagons else "OFF"
         print(f"[HEXAGONS] {status}")
+    
+    def toggle_true_hex_bounds(self):
+        """Toggle true hexagon boundary detection."""
+        self.true_hex_bounds = not self.true_hex_bounds
+        status = "ON" if self.true_hex_bounds else "OFF"
+        print(f"[TRUE HEX BOUNDS] {status}")
+        
+        # When enabling true hex bounds, also enable hex mode and hex overlay
+        if self.true_hex_bounds:
+            self.hex_mode = True
+            self.show_hexagons = True
+        
+        # Recalculate chunk position with new boundary mode
+        self.last_chunk = self.get_player_chunk()
+        self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
+    
+    def pixel_to_hex(self, px: float, py: float) -> tuple[int, int]:
+        """Convert pixel position to hex offset coordinates using cube coordinate math.
+        
+        This gives true hexagon boundary detection (not square approximation).
+        """
+        # Hex dimensions matching our grid
+        hex_height = CHUNK_SIZE * 4 / 3
+        size = hex_height / 2  # "radius" - center to vertex
+        
+        # Adjust coordinates: our hex (0,0) is centered at (CHUNK_SIZE/2, CHUNK_SIZE/2)
+        # but the formula expects hex (0,0) centered at origin
+        px = px - CHUNK_SIZE / 2
+        py = py - CHUNK_SIZE / 2
+        
+        # Pixel to fractional axial coordinates (q, r)
+        q = (math.sqrt(3) / 3 * px - 1 / 3 * py) / size
+        r = (2 / 3 * py) / size
+        
+        # Axial to cube (x + y + z = 0)
+        cx = q
+        cz = r
+        cy = -cx - cz
+        
+        # Round to nearest hex (cube_round)
+        rx = round(cx)
+        ry = round(cy)
+        rz = round(cz)
+        
+        # Fix rounding errors to maintain x + y + z = 0 constraint
+        dx = abs(rx - cx)
+        dy = abs(ry - cy)
+        dz = abs(rz - cz)
+        
+        if dx > dy and dx > dz:
+            rx = -ry - rz
+        elif dy > dz:
+            ry = -rx - rz
+        else:
+            rz = -rx - ry
+        
+        # Cube to offset coordinates (odd-r offset)
+        col = int(rx + (rz - (rz & 1)) // 2)
+        row = int(rz)
+        return (col, row)
+    
+    def get_player_chunk(self) -> tuple[int, int]:
+        """Get player's current chunk using appropriate boundary detection."""
+        if self.true_hex_bounds and self.hex_mode:
+            return self.pixel_to_hex(self.player.x, self.player.y)
+        else:
+            return self.player.get_chunk_coords(self.hex_mode)
     
     def get_hex_vertices(self, center_x: float, center_y: float) -> list[tuple[float, float]]:
         """Get the 6 vertices of a pointy-top hexagon centered at given position.
@@ -359,18 +434,26 @@ class Game:
         fill_color = CHUNK_PENDING_UNLOAD if pending_unload else CHUNK_FILL
         border_color = (120, 60, 60) if pending_unload else CHUNK_BORDER
         
-        # Draw chunk rectangle
-        rect = pygame.Rect(screen_x, screen_y, CHUNK_SIZE, CHUNK_SIZE)
-        pygame.draw.rect(self.screen, fill_color, rect)
-        pygame.draw.rect(self.screen, border_color, rect, 2)
+        center_x = screen_x + CHUNK_SIZE / 2
+        center_y = screen_y + CHUNK_SIZE / 2
         
-        # Draw hexagon overlay in hex mode when enabled
-        if self.hex_mode and self.show_hexagons:
-            center_x = screen_x + CHUNK_SIZE / 2
-            center_y = screen_y + CHUNK_SIZE / 2
+        if self.true_hex_bounds:
+            # True hex mode: only draw filled hexagons, no squares
             hex_vertices = self.get_hex_vertices(center_x, center_y)
             hex_color = (180, 100, 100) if pending_unload else (100, 180, 220)
+            pygame.draw.polygon(self.screen, fill_color, hex_vertices)
             pygame.draw.polygon(self.screen, hex_color, hex_vertices, 2)
+        else:
+            # Draw chunk rectangle
+            rect = pygame.Rect(screen_x, screen_y, CHUNK_SIZE, CHUNK_SIZE)
+            pygame.draw.rect(self.screen, fill_color, rect)
+            pygame.draw.rect(self.screen, border_color, rect, 2)
+            
+            # Draw hexagon overlay in hex mode when enabled
+            if self.hex_mode and self.show_hexagons:
+                hex_vertices = self.get_hex_vertices(center_x, center_y)
+                hex_color = (180, 100, 100) if pending_unload else (100, 180, 220)
+                pygame.draw.polygon(self.screen, hex_color, hex_vertices, 2)
         
         # Render coordinate text
         coord_text = f"({chunk.x}, {chunk.y})"
@@ -394,17 +477,24 @@ class Game:
         world_x, world_y = self.chunk_world_pos(coord[0], coord[1])
         screen_x, screen_y = self.world_to_screen(world_x, world_y)
         
-        # Draw ghost rectangle
-        rect = pygame.Rect(screen_x, screen_y, CHUNK_SIZE, CHUNK_SIZE)
-        pygame.draw.rect(self.screen, CHUNK_PENDING_LOAD, rect)
-        pygame.draw.rect(self.screen, (60, 120, 70), rect, 2)
+        center_x = screen_x + CHUNK_SIZE / 2
+        center_y = screen_y + CHUNK_SIZE / 2
         
-        # Draw hexagon overlay in hex mode when enabled
-        if self.hex_mode and self.show_hexagons:
-            center_x = screen_x + CHUNK_SIZE / 2
-            center_y = screen_y + CHUNK_SIZE / 2
+        if self.true_hex_bounds:
+            # True hex mode: only draw hexagons
             hex_vertices = self.get_hex_vertices(center_x, center_y)
+            pygame.draw.polygon(self.screen, CHUNK_PENDING_LOAD, hex_vertices)
             pygame.draw.polygon(self.screen, (80, 180, 100), hex_vertices, 2)
+        else:
+            # Draw ghost rectangle
+            rect = pygame.Rect(screen_x, screen_y, CHUNK_SIZE, CHUNK_SIZE)
+            pygame.draw.rect(self.screen, CHUNK_PENDING_LOAD, rect)
+            pygame.draw.rect(self.screen, (60, 120, 70), rect, 2)
+            
+            # Draw hexagon overlay in hex mode when enabled
+            if self.hex_mode and self.show_hexagons:
+                hex_vertices = self.get_hex_vertices(center_x, center_y)
+                pygame.draw.polygon(self.screen, (80, 180, 100), hex_vertices, 2)
         
         # Show coordinate and "LOAD" label
         coord_text = f"({coord[0]}, {coord[1]})"
@@ -423,10 +513,17 @@ class Game:
     
     def render_hud(self):
         """Render HUD information."""
-        chunk_x, chunk_y = self.player.get_chunk_coords(self.hex_mode)
+        chunk_x, chunk_y = self.get_player_chunk()
         grid_size = 2 * (self.padding + 1) + 1
-        mode_name = "Hex Offset" if self.hex_mode else "Square"
-        hex_overlay = " [Hex]" if (self.hex_mode and self.show_hexagons) else ""
+        
+        if self.true_hex_bounds:
+            mode_name = "TRUE HEX"
+        elif self.hex_mode:
+            mode_name = "Hex Offset"
+        else:
+            mode_name = "Square"
+        
+        hex_overlay = " [Overlay]" if (self.hex_mode and self.show_hexagons and not self.true_hex_bounds) else ""
         
         if self.slowmo_mode:
             slowmo_status = f"ON @ {self.slowmo_interval}f ({self.chunk_manager.queue_status})"
@@ -439,7 +536,7 @@ class Game:
             f"Loaded Chunks: {len(self.chunk_manager.chunks)}",
             f"Grid: {grid_size}x{grid_size} {mode_name}{hex_overlay}",
             f"Slowmo: {slowmo_status}",
-            "WASD: Move | 1: Mode | 2: Slowmo | 3: Hexagons | Arrows | ESC"
+            "WASD | 1:Mode 2:Slow 3:Hex 4:TrueHex | Arrows | ESC"
         ]
         
         for i, text in enumerate(texts):
@@ -490,6 +587,8 @@ class Game:
                         self.toggle_slowmo()
                     elif event.key == pygame.K_3:
                         self.toggle_hexagons()
+                    elif event.key == pygame.K_4:
+                        self.toggle_true_hex_bounds()
                     elif event.key == pygame.K_UP:
                         self.adjust_padding(1)
                     elif event.key == pygame.K_DOWN:
