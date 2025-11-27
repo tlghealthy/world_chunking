@@ -215,6 +215,9 @@ class Game:
         # Grid mode: True = hex offset, False = regular square grid
         self.hex_mode = True
         
+        # Hexagon overlay rendering (only visible in hex mode)
+        self.show_hexagons = False
+        
         # Padding: 0 = 3x3, 1 = 5x5, 2 = 7x7, etc.
         self.padding = 0
         self.max_padding = 4  # Cap at 9x9
@@ -307,6 +310,30 @@ class Game:
             # Reset counter to avoid immediate trigger after increasing
             self.slowmo_frame_counter = min(self.slowmo_frame_counter, self.slowmo_interval - 1)
     
+    def toggle_hexagons(self):
+        """Toggle hexagon overlay rendering."""
+        self.show_hexagons = not self.show_hexagons
+        status = "ON" if self.show_hexagons else "OFF"
+        print(f"[HEXAGONS] {status}")
+    
+    def get_hex_vertices(self, center_x: float, center_y: float) -> list[tuple[float, float]]:
+        """Get the 6 vertices of a pointy-top hexagon centered at given position.
+        
+        Sized to tile perfectly with the offset grid pattern.
+        """
+        w = CHUNK_SIZE          # Width (flat-to-flat)
+        h = CHUNK_SIZE * 4 / 3  # Height (vertex-to-vertex) - tiles with row spacing
+        
+        # Pointy-top hexagon vertices (starting from top, clockwise)
+        return [
+            (center_x, center_y - h / 2),           # Top
+            (center_x + w / 2, center_y - h / 4),   # Top-right
+            (center_x + w / 2, center_y + h / 4),   # Bottom-right
+            (center_x, center_y + h / 2),           # Bottom
+            (center_x - w / 2, center_y + h / 4),   # Bottom-left
+            (center_x - w / 2, center_y - h / 4),   # Top-left
+        ]
+    
     def chunk_world_pos(self, chunk_x: int, chunk_y: int) -> tuple[float, float]:
         """Get the world position of a chunk's top-left corner."""
         world_x = chunk_x * CHUNK_SIZE
@@ -337,6 +364,14 @@ class Game:
         pygame.draw.rect(self.screen, fill_color, rect)
         pygame.draw.rect(self.screen, border_color, rect, 2)
         
+        # Draw hexagon overlay in hex mode when enabled
+        if self.hex_mode and self.show_hexagons:
+            center_x = screen_x + CHUNK_SIZE / 2
+            center_y = screen_y + CHUNK_SIZE / 2
+            hex_vertices = self.get_hex_vertices(center_x, center_y)
+            hex_color = (180, 100, 100) if pending_unload else (100, 180, 220)
+            pygame.draw.polygon(self.screen, hex_color, hex_vertices, 2)
+        
         # Render coordinate text
         coord_text = f"({chunk.x}, {chunk.y})"
         coord_surface = self.font.render(coord_text, True, COORD_COLOR)
@@ -364,6 +399,13 @@ class Game:
         pygame.draw.rect(self.screen, CHUNK_PENDING_LOAD, rect)
         pygame.draw.rect(self.screen, (60, 120, 70), rect, 2)
         
+        # Draw hexagon overlay in hex mode when enabled
+        if self.hex_mode and self.show_hexagons:
+            center_x = screen_x + CHUNK_SIZE / 2
+            center_y = screen_y + CHUNK_SIZE / 2
+            hex_vertices = self.get_hex_vertices(center_x, center_y)
+            pygame.draw.polygon(self.screen, (80, 180, 100), hex_vertices, 2)
+        
         # Show coordinate and "LOAD" label
         coord_text = f"({coord[0]}, {coord[1]})"
         coord_surface = self.font.render(coord_text, True, (100, 180, 120))
@@ -384,6 +426,7 @@ class Game:
         chunk_x, chunk_y = self.player.get_chunk_coords(self.hex_mode)
         grid_size = 2 * (self.padding + 1) + 1
         mode_name = "Hex Offset" if self.hex_mode else "Square"
+        hex_overlay = " [Hex]" if (self.hex_mode and self.show_hexagons) else ""
         
         if self.slowmo_mode:
             slowmo_status = f"ON @ {self.slowmo_interval}f ({self.chunk_manager.queue_status})"
@@ -394,9 +437,9 @@ class Game:
             f"Player World Pos: ({self.player.x:.0f}, {self.player.y:.0f})",
             f"Current Chunk: ({chunk_x}, {chunk_y})",
             f"Loaded Chunks: {len(self.chunk_manager.chunks)}",
-            f"Grid: {grid_size}x{grid_size} {mode_name}",
+            f"Grid: {grid_size}x{grid_size} {mode_name}{hex_overlay}",
             f"Slowmo: {slowmo_status}",
-            "WASD: Move | 1: Mode | 2: Slowmo | Arrows: Grid/Speed | ESC: Quit"
+            "WASD: Move | 1: Mode | 2: Slowmo | 3: Hexagons | Arrows | ESC"
         ]
         
         for i, text in enumerate(texts):
@@ -445,6 +488,8 @@ class Game:
                         self.toggle_mode()
                     elif event.key == pygame.K_2:
                         self.toggle_slowmo()
+                    elif event.key == pygame.K_3:
+                        self.toggle_hexagons()
                     elif event.key == pygame.K_UP:
                         self.adjust_padding(1)
                     elif event.key == pygame.K_DOWN:
