@@ -61,39 +61,57 @@ class ChunkManager:
         # Track what's currently required (for rendering pending states)
         self.required: set[tuple[int, int]] = set()
     
-    def get_required_chunks(self, center_x: int, center_y: int, hex_mode: bool = True) -> set[tuple[int, int]]:
-        """Returns required chunks around player position."""
+    def get_required_chunks(self, center_x: int, center_y: int, hex_mode: bool = True, padding: int = 0) -> set[tuple[int, int]]:
+        """Returns required chunks around player position.
+        
+        Args:
+            padding: 0 = 3x3, 1 = 5x5, 2 = 7x7, etc.
+        """
+        radius = padding + 1  # padding 0 -> radius 1 (3x3)
+        
         if not hex_mode:
-            # Regular 3x3 grid (9 chunks)
+            # Regular square grid
             return {
                 (center_x + dx, center_y + dy)
-                for dx in (-1, 0, 1)
-                for dy in (-1, 0, 1)
+                for dx in range(-radius, radius + 1)
+                for dy in range(-radius, radius + 1)
             }
         
-        # Hex-like pattern (7 chunks - drops 2 far corners)
+        # Hex-like pattern: use distance-based filtering to drop far corners
+        # This generalizes the original 3x3 -> 7 chunk pattern to any size
         chunks = set()
         
-        # Current row - all 3 chunks
-        for dx in (-1, 0, 1):
-            chunks.add((center_x + dx, center_y))
+        # Distance threshold: slightly less than radius to cut corners
+        # This value is tuned to drop ~2 corners per "ring" of chunks
+        threshold_sq = (radius + 0.35) ** 2
         
-        # Adjacent rows - only 2 each (hex offset pattern)
-        for dy in (-1, 1):
-            if center_y % 2 == 0:
-                # Even row: neighbors are at x-1 and x
-                chunks.add((center_x - 1, center_y + dy))
-                chunks.add((center_x, center_y + dy))
-            else:
-                # Odd row: neighbors are at x and x+1
-                chunks.add((center_x, center_y + dy))
-                chunks.add((center_x + 1, center_y + dy))
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                chunk_x = center_x + dx
+                chunk_y = center_y + dy
+                
+                # Calculate effective distance accounting for hex offset
+                # Rows with different parity than center are offset by 0.5
+                x_offset = 0.5 if (chunk_y % 2) != (center_y % 2) else 0
+                
+                # Offset direction depends on which side is "far"
+                # Even center rows: odd rows shift right (+0.5), so +dx is farther
+                # Odd center rows: even rows don't shift, but we're shifted, so -dx is farther
+                if center_y % 2 == 0:
+                    eff_dx = dx + x_offset  # Positive x gets penalty
+                else:
+                    eff_dx = dx - x_offset  # Negative x gets penalty
+                
+                dist_sq = eff_dx * eff_dx + dy * dy
+                
+                if dist_sq <= threshold_sq:
+                    chunks.add((chunk_x, chunk_y))
         
         return chunks
     
-    def update(self, player_chunk_x: int, player_chunk_y: int, hex_mode: bool = True, slowmo: bool = False):
+    def update(self, player_chunk_x: int, player_chunk_y: int, hex_mode: bool = True, slowmo: bool = False, padding: int = 0):
         """Load/unload chunks based on player's current chunk position."""
-        self.required = self.get_required_chunks(player_chunk_x, player_chunk_y, hex_mode)
+        self.required = self.get_required_chunks(player_chunk_x, player_chunk_y, hex_mode, padding)
         current = set(self.chunks.keys())
         
         to_unload = current - self.required
@@ -194,8 +212,12 @@ class Game:
         self.font = pygame.font.SysFont("Consolas", 14)
         self.font_large = pygame.font.SysFont("Consolas", 18, bold=True)
         
-        # Grid mode: True = hex offset (7 chunks), False = regular 3x3 (9 chunks)
+        # Grid mode: True = hex offset, False = regular square grid
         self.hex_mode = True
+        
+        # Padding: 0 = 3x3, 1 = 5x5, 2 = 7x7, etc.
+        self.padding = 0
+        self.max_padding = 4  # Cap at 9x9
         
         # Slowmo mode: rate-limits chunk operations
         self.slowmo_mode = False
@@ -206,7 +228,7 @@ class Game:
         self.chunk_manager = ChunkManager()
         
         # Initial chunk load
-        self.chunk_manager.update(*self.player.get_chunk_coords(self.hex_mode), self.hex_mode, self.slowmo_mode)
+        self.chunk_manager.update(*self.player.get_chunk_coords(self.hex_mode), self.hex_mode, self.slowmo_mode, self.padding)
         self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
         
         # Camera offset to center view
@@ -224,18 +246,18 @@ class Game:
             # Check if player entered a new chunk
             current_chunk = self.player.get_chunk_coords(self.hex_mode)
             if current_chunk != self.last_chunk:
-                self.chunk_manager.update(*current_chunk, self.hex_mode, self.slowmo_mode)
+                self.chunk_manager.update(*current_chunk, self.hex_mode, self.slowmo_mode, self.padding)
                 self.last_chunk = current_chunk
     
     def toggle_mode(self):
-        """Toggle between hex offset mode and regular 3x3 grid."""
+        """Toggle between hex offset mode and regular square grid."""
         self.hex_mode = not self.hex_mode
-        mode_name = "Hex Offset (7 chunks)" if self.hex_mode else "Regular 3x3 (9 chunks)"
+        mode_name = "Hex Offset" if self.hex_mode else "Square Grid"
         print(f"[MODE] Switched to: {mode_name}")
         
         # Recalculate chunk position and reload chunks for new mode
         self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
-        self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode)
+        self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
     
     def toggle_slowmo(self):
         """Toggle slowmo mode."""
@@ -247,7 +269,20 @@ class Game:
         # If turning off slowmo, flush all pending operations immediately
         if not self.slowmo_mode:
             self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
-            self.chunk_manager.update(*self.last_chunk, self.hex_mode, False)
+            self.chunk_manager.update(*self.last_chunk, self.hex_mode, False, self.padding)
+    
+    def adjust_padding(self, delta: int):
+        """Increase or decrease the chunk padding level."""
+        old_padding = self.padding
+        self.padding = max(0, min(self.max_padding, self.padding + delta))
+        
+        if self.padding != old_padding:
+            grid_size = 2 * (self.padding + 1) + 1
+            print(f"[PADDING] {grid_size}x{grid_size} grid (padding={self.padding})")
+            
+            # Reload chunks with new padding
+            self.last_chunk = self.player.get_chunk_coords(self.hex_mode)
+            self.chunk_manager.update(*self.last_chunk, self.hex_mode, self.slowmo_mode, self.padding)
     
     def process_slowmo(self):
         """Handle slowmo frame counting and processing."""
@@ -336,16 +371,17 @@ class Game:
     def render_hud(self):
         """Render HUD information."""
         chunk_x, chunk_y = self.player.get_chunk_coords(self.hex_mode)
-        mode_name = "Hex Offset (7)" if self.hex_mode else "Regular 3x3 (9)"
+        grid_size = 2 * (self.padding + 1) + 1
+        mode_name = "Hex Offset" if self.hex_mode else "Square"
         slowmo_status = f"ON ({self.chunk_manager.queue_status})" if self.slowmo_mode else "OFF"
         
         texts = [
             f"Player World Pos: ({self.player.x:.0f}, {self.player.y:.0f})",
             f"Current Chunk: ({chunk_x}, {chunk_y})",
             f"Loaded Chunks: {len(self.chunk_manager.chunks)}",
-            f"Mode: {mode_name}",
+            f"Grid: {grid_size}x{grid_size} {mode_name}",
             f"Slowmo: {slowmo_status}",
-            "Move: WASD | 1: Toggle Mode | 2: Toggle Slowmo | ESC: Quit"
+            "WASD: Move | 1: Mode | 2: Slowmo | Up/Down: Grid Size | ESC: Quit"
         ]
         
         for i, text in enumerate(texts):
@@ -394,6 +430,10 @@ class Game:
                         self.toggle_mode()
                     elif event.key == pygame.K_2:
                         self.toggle_slowmo()
+                    elif event.key == pygame.K_UP:
+                        self.adjust_padding(1)
+                    elif event.key == pygame.K_DOWN:
+                        self.adjust_padding(-1)
             
             self.handle_input()
             self.process_slowmo()
